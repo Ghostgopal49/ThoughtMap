@@ -1,0 +1,67 @@
+name: Build ThoughtMap
+
+# Runs every time the code changes, or when you press "Run workflow" on GitHub.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use the newest Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build app (unsigned; SideStore signs it on your phone)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project ThoughtMap.xcodeproj \
+            -scheme ThoughtMap \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/ThoughtMap.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            MARKETING_VERSION=1.0.${{ github.run_number }} \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            2>&1 | tee build.log | grep -E "error:|warning: .*ThoughtMap/|ARCHIVE (SUCCEEDED|FAILED)" || true
+          test -d build/ThoughtMap.xcarchive/Products/Applications/ThoughtMap.app
+
+      - name: Package .ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/ThoughtMap.xcarchive/Products/Applications/ThoughtMap.app Payload/
+          zip -qry ThoughtMap.ipa Payload
+
+      - name: Keep build log if something failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+
+      - name: Publish release with the .ipa
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: ThoughtMap build ${{ github.run_number }}
+          body: Download ThoughtMap.ipa on your iPhone, then open it with SideStore.
+          files: ThoughtMap.ipa
+          make_latest: true

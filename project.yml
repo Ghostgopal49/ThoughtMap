@@ -1,0 +1,33 @@
+name: ThoughtMap
+options:
+  bundleIdPrefix: com.personal
+  deploymentTarget:
+    iOS: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  ThoughtMap:
+    type: application
+    platform: iOS
+    sources:
+      - ThoughtMap
+    info:
+      path: ThoughtMap/Info.plist
+      properties:
+        CFBundleDisplayName: ThoughtMap
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.personal.thoughtmap
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_PREVIEWS: YES
