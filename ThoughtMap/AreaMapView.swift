@@ -47,6 +47,9 @@ struct AreaMapView: View {
     @State private var viewSize: CGSize = .zero
     @State private var didInitialFit = false
     @State private var exiting = false
+    /// True while the map is moving. Real Liquid Glass is used only when it is still.
+    @State private var isMoving = true
+    @State private var settleTask: Task<Void, Never>?
 
     @State private var draggingID: UUID?
     @State private var dragLocation: CGPoint?
@@ -88,6 +91,8 @@ struct AreaMapView: View {
                     fit(animated: false)
                     didInitialFit = true
                 }
+                // Wait for the zoom-in animation to finish before switching to real glass.
+                settle(after: 0.6)
             }
             .onChange(of: size) { _, newSize in viewSize = newSize }
             .onChange(of: fitRequest) { _, _ in fit(animated: true) }
@@ -154,7 +159,8 @@ struct AreaMapView: View {
                 detail: BubbleDetail.forSize(onScreen),
                 isCluster: item.isCluster,
                 pending: item.pending,
-                highlighted: dropTargetID == item.id
+                highlighted: dropTargetID == item.id,
+                liveGlass: !isMoving
             )
             .equatable()
             .scaleEffect(scale * placed.factor * (isDragged ? 1.1 : (dropTargetID == item.id ? 1.1 : 1)))
@@ -242,6 +248,7 @@ struct AreaMapView: View {
     private var panGesture: some Gesture {
         DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .onChanged { value in
+                startMoving()
                 if panStartCamera == nil { panStartCamera = camera }
                 guard let start = panStartCamera else { return }
                 camera = CGPoint(
@@ -249,13 +256,17 @@ struct AreaMapView: View {
                     y: start.y - value.translation.height / scale
                 )
             }
-            .onEnded { _ in panStartCamera = nil }
+            .onEnded { _ in
+                panStartCamera = nil
+                settle()
+            }
     }
 
     /// Pinching far enough out leaves the area and returns to the eagle view.
     private var pinchGesture: some Gesture {
         MagnifyGesture()
             .onChanged { value in
+                startMoving()
                 if pinchStartScale == nil { pinchStartScale = scale }
                 let start = pinchStartScale ?? scale
                 scale = min(max(start * value.magnification, 0.1), 2.5)
@@ -268,7 +279,22 @@ struct AreaMapView: View {
                 } else if scale < fittedScale {
                     withAnimation(.snappy) { scale = fittedScale }
                 }
+                settle()
             }
+    }
+
+    private func startMoving() {
+        settleTask?.cancel()
+        if !isMoving { isMoving = true }
+    }
+
+    private func settle(after seconds: Double = 0.25) {
+        settleTask?.cancel()
+        settleTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled else { return }
+            isMoving = false
+        }
     }
 
     private func leave() {
@@ -279,7 +305,10 @@ struct AreaMapView: View {
     }
 
     private func dragChanged(_ item: BubbleItem, _ value: DragGesture.Value, size: CGSize) {
-        if draggingID == nil { draggingID = item.id }
+        if draggingID == nil {
+            draggingID = item.id
+            startMoving()
+        }
         guard draggingID == item.id else { return }
         dragLocation = value.location
 
@@ -316,6 +345,7 @@ struct AreaMapView: View {
             dragLocation = nil
             dropTargetID = nil
         }
+        settle()
         guard let movingID, let targetID,
               let target = clusters.first(where: { $0.uid == targetID }) else { return }
 
