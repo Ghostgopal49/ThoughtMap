@@ -129,10 +129,8 @@ struct EagleView: View {
             let reach = rayLength(from: centre, angle: angle, in: size)
             let distance = max(reach * 0.8, reach - 60)
             let diameter = CGFloat(22 + min(count, 12) * 3)
-            Circle()
-                .fill(Color.clear)
-                .frame(width: diameter, height: diameter)
-                .glassEffect(.regular.tint(color.opacity(0.4)), in: Circle())
+            BubbleFace(title: "", subtitle: nil, colorIndex: slice.colorIndex, diameter: diameter,
+                       detail: .plain, isCluster: false, pending: false, highlighted: false)
                 .position(point(from: centre, angle: angle, distance: distance))
                 .allowsHitTesting(false)
         }

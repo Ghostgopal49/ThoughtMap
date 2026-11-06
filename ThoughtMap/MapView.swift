@@ -20,6 +20,8 @@ struct MapView: View {
     @State private var sorting = false
 
     var body: some View {
+        let slices = self.slices
+        let unsortedCount = self.unsortedCount
         ZStack {
             MapBackground()
                 .ignoresSafeArea()

@@ -24,6 +24,7 @@ struct AddResult {
 /// All the logic for adding, placing, moving and reflecting on thoughts.
 /// Everything runs on the iPhone: Apple's on-device model plus local storage.
 @MainActor
+@Observable
 final class Organizer {
     static let shared = Organizer()
     private init() {}
@@ -90,7 +91,14 @@ final class Organizer {
     func allThoughts() -> [Thought] { (try? context.fetch(FetchDescriptor<Thought>())) ?? [] }
     func rootClusters() -> [Cluster] { allClusters().filter { $0.parent == nil } }
 
-    func save() { try? context.save() }
+    /// Goes up by one after every saved change, so views can rebuild their cached snapshot
+    /// once per change instead of reading the database on every frame.
+    private(set) var version = 0
+
+    func save() {
+        try? context.save()
+        version &+= 1
+    }
 
     // MARK: - Layout
 
