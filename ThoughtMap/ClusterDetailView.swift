@@ -38,6 +38,52 @@ struct ClusterDetailView: View {
                         TextField("Name", text: $cluster.name)
                     }
 
+                    if cluster.parent == nil {
+                        Section {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 10) {
+                                    ForEach(0..<Palette.count, id: \.self) { index in
+                                        Button {
+                                            Organizer.shared.setStyle(of: cluster, colorIndex: index)
+                                        } label: {
+                                            Circle()
+                                                .fill(Palette.color(index))
+                                                .frame(width: 30, height: 30)
+                                                .overlay(
+                                                    Circle().strokeBorder(Color.white, lineWidth: cluster.colorIndex == index ? 3 : 0)
+                                                )
+                                        }
+                                        .buttonStyle(.plain)
+                                        .accessibilityLabel(Palette.names[index])
+                                    }
+                                }
+                                .padding(.vertical, 4)
+                            }
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 12) {
+                                ForEach(AreaStyle.symbols, id: \.self) { symbol in
+                                    Button {
+                                        Organizer.shared.setStyle(of: cluster, symbol: symbol)
+                                    } label: {
+                                        Image(systemName: symbol)
+                                            .font(.system(size: 18, weight: .semibold))
+                                            .frame(width: 40, height: 40)
+                                            .background(
+                                                Circle().fill(cluster.displaySymbol == symbol
+                                                              ? Palette.color(cluster.colorIndex).opacity(0.6)
+                                                              : Color.secondary.opacity(0.15))
+                                            )
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        } header: {
+                            Text("Colour and icon")
+                        } footer: {
+                            Text("Shown on this area's wedge in the eagle view.")
+                        }
+                    }
+
                     Section {
                         Picker("Inside", selection: parentSelection) {
                             Text("Top level").tag(UUID?.none)

@@ -27,8 +27,13 @@ struct RootView: View {
             .task {
                 Organizer.shared.relayout(animated: false)
                 // One-time re-sort when the sorting rules improve.
-                if sortingVersion < 2 {
-                    sortingVersion = 2
+                if sortingVersion < 3 {
+                    sortingVersion = 3
+                    for area in Organizer.shared.rootClusters() where !area.isInbox {
+                        if let style = AreaStyle.guess(for: area.name) {
+                            Organizer.shared.setStyle(of: area, colorIndex: style.colorIndex)
+                        }
+                    }
                     await Organizer.shared.reorganizeEverything()
                 }
             }

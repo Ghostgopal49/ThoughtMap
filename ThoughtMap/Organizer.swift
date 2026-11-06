@@ -342,7 +342,7 @@ final class Organizer {
 
     @discardableResult
     func createCluster(named name: String, parent: Cluster?) -> Cluster {
-        let color = parent?.colorIndex ?? nextRootColor()
+        let color = parent?.colorIndex ?? AreaStyle.guess(for: name)?.colorIndex ?? nextRootColor()
         let cluster = Cluster(name: name, x: parent?.x ?? 0, y: parent?.y ?? 0, colorIndex: color)
         context.insert(cluster)
         cluster.parent = parent
@@ -355,6 +355,16 @@ final class Organizer {
             return index
         }
         return used.count % Palette.count
+    }
+
+    /// Changes an area's colour (for it and everything inside) and its icon.
+    func setStyle(of cluster: Cluster, colorIndex: Int? = nil, symbol: String? = nil) {
+        let area = cluster.root
+        if let colorIndex {
+            for c in subtree(of: area) { c.colorIndex = colorIndex }
+        }
+        if let symbol { area.symbol = symbol }
+        save()
     }
 
     func inbox() -> Cluster {

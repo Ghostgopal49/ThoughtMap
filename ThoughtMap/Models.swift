@@ -11,6 +11,8 @@ final class Cluster {
     var y: Double = 0
     /// Index into `Palette`. -1 means grey (used for "Unsorted").
     var colorIndex: Int = 0
+    /// SF Symbol shown for a top-level area. Empty means "pick one from the name".
+    var symbol: String = ""
 
     var parent: Cluster?
 
@@ -30,6 +32,12 @@ final class Cluster {
     }
 
     static let inboxName = "Unsorted"
+
+    var displaySymbol: String {
+        if !symbol.isEmpty { return symbol }
+        if isInbox { return "tray" }
+        return AreaStyle.guess(for: name)?.symbol ?? "sparkles"
+    }
 
     var isInbox: Bool { parent == nil && name == Cluster.inboxName }
 
