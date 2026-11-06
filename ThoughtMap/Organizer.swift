@@ -1,15 +1,18 @@
 import Foundation
-import CoreGraphics
+import SwiftUI
 import SwiftData
 import FoundationModels
 
 /// What the on-device model returns for each new thought.
 @Generable
 struct Placement {
-    @Guide(description: "Cluster path from broad to specific, as separate names. Use 1 to 3 names. Reuse existing cluster names exactly when they fit.")
-    var path: [String]
+    @Guide(description: "The broad subject area of the thought. Use one of the main areas listed when it fits. Never a generic word like Projects, Tasks, Goals or To do.")
+    var area: String
 
-    @Guide(description: "The thought rewritten as a short bubble label of at most 6 words.")
+    @Guide(description: "A theme inside that area, 1 to 3 words, for example App ideas, Recipes to try, Languages. Reuse an existing theme when it fits.")
+    var theme: String
+
+    @Guide(description: "The thought as a short bubble label of at most 4 words.")
     var label: String
 }
 
@@ -25,8 +28,34 @@ final class Organizer {
     static let shared = Organizer()
     private init() {}
 
-    private var isOrganizing = false
+    private(set) var isOrganizing = false
     private var context: ModelContext { Store.shared.mainContext }
+
+    // MARK: - Main areas (editable in Settings)
+
+    nonisolated static let mainAreasKey = "mainAreas"
+    nonisolated static let defaultMainAreas: [String] = [
+        "Work", "Money", "Learning", "Health & Fitness", "Cooking", "Apps & Tech",
+        "Creative", "Relationships", "Home", "Travel", "Personal"
+    ]
+
+    nonisolated static func mainAreas() -> [String] {
+        let stored = UserDefaults.standard.string(forKey: mainAreasKey) ?? ""
+        let list = stored
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return list.isEmpty ? defaultMainAreas : list
+    }
+
+    nonisolated static func saveMainAreas(_ areas: [String]) {
+        UserDefaults.standard.set(areas.joined(separator: "\n"), forKey: mainAreasKey)
+    }
+
+    nonisolated private static let genericNames: Set<String> = [
+        "projects", "project", "tasks", "task", "things to do", "to do", "todo", "to-do",
+        "goals", "misc", "miscellaneous", "general", "other", "stuff", "thoughts", "notes"
+    ]
 
     // MARK: - AI availability
 
@@ -63,6 +92,39 @@ final class Organizer {
 
     func save() { try? context.save() }
 
+    // MARK: - Layout
+
+    /// Re-packs the whole map into the honeycomb. Cheap enough to run after every change.
+    func relayout(animated: Bool = true) {
+        let positions = Layout.compute(clusters: allClusters(), thoughts: allThoughts())
+        let apply = {
+            for cluster in self.allClusters() {
+                if let p = positions.clusters[cluster.uid] {
+                    let x = Double(p.x), y = Double(p.y)
+                    if abs(cluster.x - x) > 0.5 || abs(cluster.y - y) > 0.5 {
+                        cluster.x = x
+                        cluster.y = y
+                    }
+                }
+            }
+            for thought in self.allThoughts() {
+                if let p = positions.thoughts[thought.uid] {
+                    let x = Double(p.x), y = Double(p.y)
+                    if abs(thought.x - x) > 0.5 || abs(thought.y - y) > 0.5 {
+                        thought.x = x
+                        thought.y = y
+                    }
+                }
+            }
+        }
+        if animated {
+            withAnimation(.smooth(duration: 0.5)) { apply() }
+        } else {
+            apply()
+        }
+        save()
+    }
+
     // MARK: - Adding
 
     /// Saves the thought straight away (in "Unsorted"), then asks the AI where it belongs.
@@ -77,10 +139,10 @@ final class Organizer {
         linkRelated(thought)
         move(thought, to: inbox(), manual: false)
         thought.needsOrganizing = true
-        save()
+        relayout()
 
         await organize(thought)
-        save()
+        relayout()
         return AddResult(thought: thought, path: thought.cluster?.pathString ?? Cluster.inboxName)
     }
 
@@ -94,7 +156,7 @@ final class Organizer {
             .sorted { $0.createdAt < $1.createdAt }
         for thought in pending {
             await organize(thought)
-            save()
+            relayout()
         }
     }
 
@@ -106,12 +168,28 @@ final class Organizer {
         await organizePending()
     }
 
+    /// Sorts every thought again from scratch, keeping the ones the person placed by hand.
+    func reorganizeEverything() async {
+        guard !isOrganizing else { return }
+        let box = inbox()
+        for thought in allThoughts() where !thought.manuallyPlaced {
+            thought.cluster = box
+            thought.needsOrganizing = true
+            thought.organizeAttempts = 0
+            thought.aiPath = ""
+        }
+        save()
+        pruneAllEmptyClusters()
+        relayout()
+        await organizePending()
+    }
+
     func reorganize(_ thought: Thought) async {
         thought.needsOrganizing = true
         thought.organizeAttempts = 0
         thought.manuallyPlaced = false
         await organize(thought)
-        save()
+        relayout()
     }
 
     private func organize(_ thought: Thought) async {
@@ -119,17 +197,12 @@ final class Organizer {
 
         if isAIAvailable {
             if let placement = await askForPlacement(thought) {
-                let names = placement.path
-                    .map(cleanName)
-                    .filter { !$0.isEmpty && $0.lowercased() != Cluster.inboxName.lowercased() }
-                if !names.isEmpty {
-                    let target = resolve(path: Array(names.prefix(3)))
+                if let target = resolve(area: placement.area, theme: placement.theme) {
                     let label = placement.label.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !label.isEmpty { thought.label = String(label.prefix(60)) }
+                    if !label.isEmpty { thought.label = String(label.prefix(50)) }
                     thought.aiPath = target.pathString
                     move(thought, to: target, manual: false)
                     thought.needsOrganizing = false
-                    removeEmptyInbox()
                     return
                 }
             }
@@ -143,42 +216,49 @@ final class Organizer {
             thought.aiPath = target.pathString
             thought.needsOrganizing = false
         }
-        removeEmptyInbox()
     }
 
     private static let placementInstructions = """
     You organise one person's private thoughts into a mind map.
-    The map is made of clusters arranged from broad to specific, for example: Projects › App ideas › Mind map app.
-    Given the existing clusters and a new thought, choose the path of clusters where the thought belongs.
+    Each thought goes into an AREA (its broad subject) and a THEME inside that area.
     Rules:
-    - Return the path as a list of separate names, broadest first. Use 1 to 3 names.
-    - Reuse existing cluster names exactly, with the same spelling, whenever they fit.
-    - Only invent a new cluster when nothing existing fits.
-    - Top-level clusters are broad life areas, such as Work, Money, Health, Cooking, Learning, Projects, Relationships, Home, Ideas.
-    - Cluster names are 1 to 3 words in Title Case.
-    - The label sums up the thought in at most 6 words.
+    - The area is about WHAT the thought is about, never about what kind of thing it is. Wanting to do something, a plan, a goal or a task is not an area.
+    - Never use generic areas like Projects, Tasks, Goals, Things to do, Ideas or Misc.
+    - Pick the most specific subject. Learning to cook belongs in Cooking, not Learning. Learning to code an app belongs in Apps & Tech.
+    - Use Learning only for studying, courses, languages, books and skills with no better area.
+    - Prefer the person's main areas. Create a new area only when none fits at all.
+    - Reuse existing themes with the exact same spelling when they fit.
+    - Names are 1 to 3 words in Title Case. The label sums up the thought in at most 4 words.
+    Examples:
+    - "I want to create a mind map app for my iPhone" → area: Apps & Tech, theme: App Ideas, label: Mind map iPhone app
+    - "learn to make proper biryani" → area: Cooking, theme: Recipes to Try, label: Make biryani
+    - "start learning Spanish" → area: Learning, theme: Languages, label: Learn Spanish
+    - "put 10% of salary into index funds" → area: Money, theme: Investing, label: Invest 10% monthly
+    - "ask my manager about the promotion" → area: Work, theme: Career Growth, label: Ask about promotion
+    - "go for a run three times a week" → area: Health & Fitness, theme: Running, label: Run 3x weekly
     """
 
     private func askForPlacement(_ thought: Thought) async -> Placement? {
-        let paths = allClusters()
-            .filter { !$0.isInbox }
-            .map(\.pathString)
-            .sorted()
-            .prefix(120)
+        let roots = rootClusters().filter { !$0.isInbox }.sorted { $0.name < $1.name }
+        let clusters = allClusters()
+
+        var prompt = "Main areas: " + Self.mainAreas().joined(separator: ", ") + "\n"
+        let themeLines = roots.prefix(30).compactMap { root -> String? in
+            let themes = clusters
+                .filter { $0.parent?.uid == root.uid }
+                .map(\.name)
+                .sorted()
+                .prefix(12)
+            return themes.isEmpty ? "- \(root.name): (no themes yet)" : "- \(root.name): " + themes.joined(separator: ", ")
+        }
+        if !themeLines.isEmpty {
+            prompt += "\nExisting areas and their themes:\n" + themeLines.joined(separator: "\n") + "\n"
+        }
 
         let corrections = allThoughts()
             .filter { $0.manuallyPlaced && !$0.aiPath.isEmpty && $0.cluster?.pathString != $0.aiPath }
             .sorted { $0.createdAt > $1.createdAt }
             .prefix(6)
-
-        var prompt = ""
-        if paths.isEmpty {
-            prompt += "There are no clusters yet.\n"
-        } else {
-            prompt += "Existing clusters (› separates levels):\n"
-            prompt += paths.map { "- \($0)" }.joined(separator: "\n")
-            prompt += "\n"
-        }
         if !corrections.isEmpty {
             prompt += "\nThe person moved some earlier thoughts. Follow their preferences:\n"
             prompt += corrections.map { "- \"\($0.label)\": you chose \($0.aiPath), they moved it to \($0.cluster?.pathString ?? "")" }
@@ -207,71 +287,66 @@ final class Organizer {
         return String(joined.prefix(40))
     }
 
-    /// Turns ["Projects", "App ideas"] into a cluster, reusing what exists and creating what doesn't.
-    private func resolve(path names: [String]) -> Cluster {
-        let lowered = names.map { $0.lowercased() }
-        let clusters = allClusters().filter { !$0.isInbox }
+    private func same(_ a: String, _ b: String) -> Bool {
+        a.compare(b, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+    }
 
-        // An existing cluster whose path ends with exactly these names.
-        let suffixMatches = clusters.filter { cluster in
-            let clusterPath = cluster.path.map { $0.name.lowercased() }
-            return clusterPath.count >= lowered.count && Array(clusterPath.suffix(lowered.count)) == lowered
-        }
-        if let best = suffixMatches.min(by: { $0.path.count < $1.path.count }) {
-            return best
-        }
+    /// Finds the best existing area name, or one of the main areas, for what the model said.
+    private func matchArea(_ raw: String, theme: String) -> String {
+        var name = cleanName(raw)
+        let mains = Self.mainAreas()
+        let existing = rootClusters().filter { !$0.isInbox }.map(\.name)
+        let candidates = existing + mains.filter { m in !existing.contains(where: { same($0, m) }) }
 
-        var parent: Cluster? = nil
-        var remaining = names
-
-        // If the first name isn't a top-level cluster but exists deeper, start from there.
-        let roots = rootClusters().filter { !$0.isInbox }
-        if let first = remaining.first,
-           !roots.contains(where: { $0.name.lowercased() == first.lowercased() }),
-           let anchor = clusters.first(where: { $0.name.lowercased() == first.lowercased() }) {
-            parent = anchor
-            remaining.removeFirst()
+        let isGeneric = Self.genericNames.contains(name.lowercased()) && !mains.contains(where: { same($0, name) })
+        if name.isEmpty || isGeneric {
+            // The model fell back to a generic word: try the theme, else Personal.
+            let themeName = cleanName(theme)
+            if let hit = candidates.first(where: { same($0, themeName) }) { return hit }
+            name = mains.first(where: { same($0, "Personal") }) ?? "Personal"
         }
-
-        for name in remaining {
-            let siblings = parent.map { p in allClusters().filter { $0.parent?.uid == p.uid } } ?? rootClusters()
-            if let match = siblings.first(where: { !$0.isInbox && $0.name.lowercased() == name.lowercased() }) {
-                parent = match
-            } else {
-                parent = createCluster(named: name, parent: parent)
-            }
+        if let exact = candidates.first(where: { same($0, name) }) { return exact }
+        let lower = name.lowercased()
+        if lower.count >= 3, let close = candidates.first(where: { candidate in
+            let c = candidate.lowercased()
+            return c.count >= 3 && (c.contains(lower) || lower.contains(c))
+        }) {
+            return close
         }
-        return parent ?? createCluster(named: names.first ?? "Ideas", parent: nil)
+        return name
+    }
+
+    /// Turns (area, theme) into a cluster, reusing what exists and creating what doesn't.
+    private func resolve(area rawArea: String, theme rawTheme: String) -> Cluster? {
+        let areaName = matchArea(rawArea, theme: rawTheme)
+        guard !areaName.isEmpty, !same(areaName, Cluster.inboxName) else { return nil }
+
+        let root = rootClusters().first(where: { !$0.isInbox && same($0.name, areaName) })
+            ?? createCluster(named: areaName, parent: nil)
+
+        let themeName = cleanName(rawTheme)
+        if themeName.isEmpty || same(themeName, areaName) || Self.genericNames.contains(themeName.lowercased()) {
+            return root
+        }
+        let inArea = allClusters().filter { $0.isDescendant(of: root) }
+        if let direct = inArea.first(where: { $0.parent?.uid == root.uid && same($0.name, themeName) }) {
+            return direct
+        }
+        if let deeper = inArea.first(where: { same($0.name, themeName) }) {
+            return deeper
+        }
+        return createCluster(named: themeName, parent: root)
     }
 
     // MARK: - Clusters
 
     @discardableResult
     func createCluster(named name: String, parent: Cluster?) -> Cluster {
-        let position: CGPoint
-        let color: Int
-        if let parent {
-            let siblingCount = allClusters().filter { $0.parent?.uid == parent.uid }.count
-            position = Layout.childPosition(parent: parent, index: siblingCount)
-            color = parent.colorIndex
-        } else {
-            position = freeRootPosition()
-            color = nextRootColor()
-        }
-        let cluster = Cluster(name: name, x: Double(position.x), y: Double(position.y), colorIndex: color)
+        let color = parent?.colorIndex ?? nextRootColor()
+        let cluster = Cluster(name: name, x: parent?.x ?? 0, y: parent?.y ?? 0, colorIndex: color)
         context.insert(cluster)
         cluster.parent = parent
         return cluster
-    }
-
-    private func freeRootPosition() -> CGPoint {
-        let roots = rootClusters()
-        for index in 1..<400 {
-            let candidate = Layout.rootPosition(index: index)
-            let isFree = roots.allSatisfy { hypot($0.x - Double(candidate.x), $0.y - Double(candidate.y)) > 420 }
-            if isFree { return candidate }
-        }
-        return Layout.rootPosition(index: roots.count + 1)
     }
 
     private func nextRootColor() -> Int {
@@ -289,12 +364,36 @@ final class Organizer {
         return cluster
     }
 
-    private func removeEmptyInbox() {
-        let thoughts = allThoughts()
-        for cluster in rootClusters() where cluster.isInbox {
-            let hasThoughts = thoughts.contains { $0.cluster?.uid == cluster.uid }
-            let hasChildren = allClusters().contains { $0.parent?.uid == cluster.uid }
-            if !hasThoughts && !hasChildren { context.delete(cluster) }
+    private func isEmpty(_ cluster: Cluster) -> Bool {
+        let hasThoughts = allThoughts().contains { $0.cluster?.uid == cluster.uid }
+        let hasChildren = allClusters().contains { $0.parent?.uid == cluster.uid }
+        return !hasThoughts && !hasChildren
+    }
+
+    /// Removes a cluster once it has nothing left in it, and then its parent if that is now empty too.
+    private func pruneIfEmpty(_ cluster: Cluster?) {
+        var current = cluster
+        var steps = 0
+        while let node = current, steps < 12, isEmpty(node) {
+            let parent = node.parent
+            context.delete(node)
+            save()
+            current = parent
+            steps += 1
+        }
+    }
+
+    private func pruneAllEmptyClusters() {
+        var changed = true
+        var rounds = 0
+        while changed && rounds < 12 {
+            changed = false
+            rounds += 1
+            for cluster in allClusters() where isEmpty(cluster) {
+                context.delete(cluster)
+                changed = true
+            }
+            save()
         }
     }
 
@@ -302,41 +401,17 @@ final class Organizer {
         allClusters().filter { $0.uid == cluster.uid || $0.isDescendant(of: cluster) }
     }
 
-    /// Moves a cluster together with its sub-clusters and their thoughts.
-    func shift(_ cluster: Cluster, dx: Double, dy: Double) {
-        let moving = subtree(of: cluster)
-        let ids = Set(moving.map(\.uid))
-        for c in moving {
-            c.x += dx
-            c.y += dy
-        }
-        for thought in allThoughts() {
-            if let id = thought.cluster?.uid, ids.contains(id) {
-                thought.x += dx
-                thought.y += dy
-            }
-        }
-        save()
-    }
-
     func setParent(_ cluster: Cluster, to newParent: Cluster?) {
         if let newParent {
-            guard newParent.uid != cluster.uid, !newParent.isDescendant(of: cluster) else { return }
+            guard newParent.uid != cluster.uid, !newParent.isDescendant(of: cluster), !newParent.isInbox else { return }
         }
-        guard cluster.parent?.uid != newParent?.uid else { return }
-
-        let target: CGPoint
-        if let newParent {
-            let siblingCount = allClusters().filter { $0.parent?.uid == newParent.uid && $0.uid != cluster.uid }.count
-            target = Layout.childPosition(parent: newParent, index: siblingCount)
-        } else {
-            cluster.parent = nil
-            target = freeRootPosition()
-        }
+        guard !cluster.isInbox, cluster.parent?.uid != newParent?.uid else { return }
+        let oldParent = cluster.parent
         cluster.parent = newParent
         let color = newParent?.colorIndex ?? nextRootColor()
         for c in subtree(of: cluster) { c.colorIndex = color }
-        shift(cluster, dx: Double(target.x) - cluster.x, dy: Double(target.y) - cluster.y)
+        pruneIfEmpty(oldParent)
+        relayout()
     }
 
     /// Deletes a cluster. Its thoughts and sub-clusters move up one level
@@ -351,7 +426,7 @@ final class Organizer {
         if !orphans.isEmpty {
             let destination = parent ?? inbox()
             for thought in orphans {
-                move(thought, to: destination, manual: false)
+                thought.cluster = destination
                 if parent == nil {
                     thought.needsOrganizing = true
                     thought.organizeAttempts = 0
@@ -359,19 +434,18 @@ final class Organizer {
             }
         }
         context.delete(cluster)
-        removeEmptyInbox()
         save()
+        relayout()
     }
 
     // MARK: - Thoughts
 
     private func move(_ thought: Thought, to cluster: Cluster, manual: Bool) {
-        if thought.cluster?.uid != cluster.uid {
-            let index = allThoughts().filter { $0.cluster?.uid == cluster.uid && $0.uid != thought.uid }.count
+        let previous = thought.cluster
+        if previous?.uid != cluster.uid {
             thought.cluster = cluster
-            let position = Layout.thoughtPosition(around: cluster, index: index)
-            thought.x = Double(position.x)
-            thought.y = Double(position.y)
+            save()
+            pruneIfEmpty(previous)
         }
         if manual {
             thought.manuallyPlaced = true
@@ -382,18 +456,19 @@ final class Organizer {
     func moveManually(_ thought: Thought, to cluster: Cluster) {
         move(thought, to: cluster, manual: true)
         if cluster.isInbox { thought.needsOrganizing = true }
-        removeEmptyInbox()
-        save()
+        relayout()
     }
 
     func delete(_ thought: Thought) {
         let id = thought.uid
+        let previous = thought.cluster
         for other in allThoughts() where other.relatedIDs.contains(id) {
             other.relatedIDs.removeAll { $0 == id }
         }
         context.delete(thought)
-        removeEmptyInbox()
         save()
+        pruneIfEmpty(previous)
+        relayout()
     }
 
     private func linkRelated(_ thought: Thought) {
